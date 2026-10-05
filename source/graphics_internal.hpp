@@ -11,6 +11,7 @@ struct GLFWwindow;
 namespace graphics::internal {
 
 struct Context {
+    uint32_t api_version;
 	VkPhysicalDevice physical_device;
 	VkDevice device;
 
@@ -34,6 +35,10 @@ extern Context context;
 
 bool initialize(GLFWwindow* const window);
 void shutdown();
+
+// Counts validation errors, including those raised during resource destruction.
+uint32_t validationErrorCount();
+bool validationMessengerActive();
 
 void resize(uint32_t width, uint32_t height);
 

@@ -1,3 +1,19 @@
-build-*/
+# CMake build output and dependencies downloaded into build directories
+/build/
+/build-*/
+/cmake-build-*/
+
+# Local CLion settings and personal CMake presets
+/.idea/
+/CMakeUserPresets.json
+
+# Generated shaders and ImGui window settings
 shaders/*.spv
 imgui.ini
+
+# macOS metadata
+.DS_Store
+._*
+
+# Local lab documents and reports
+/doc/
