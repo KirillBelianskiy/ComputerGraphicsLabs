@@ -4,6 +4,10 @@
 
 namespace application {
 
+struct Scene;
+// The same model is edited by ImGui and exercised by the runtime smoke test.
+Scene& currentScene();
+
 bool initialize();
 void shutdown();
 
