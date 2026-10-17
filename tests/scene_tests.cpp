@@ -71,7 +71,7 @@ void projections() {
     require(close(ndc(ortho, {camera.orthographic_half_height * aspect, 0, -10}).x, 1),
             "Orthographic right bound must map to NDC 1");
     const auto before = ortho * camera.view();
-    camera.distance += 5;
+    camera.position -= camera.forward() * 5.0f;
     const auto after = ortho * camera.view();
     require(close(ndc(before, {1, 0, 0}).x, ndc(after, {1, 0, 0}).x) &&
             close(ndc(before, {1, 0, 0}).y, ndc(after, {1, 0, 0}).y),
@@ -286,10 +286,79 @@ void geometryAndTransform() {
     require(glm::length(transformed - glm::vec3(3, 6, 5)) < 0.0001f,
             "Model must apply scale, then rotation, then translation");
 }
+void normalsAndCamera() {
+    const auto vertices = application::cubeVertices();
+    const auto& indices = application::cube_indices;
+    for (std::size_t i = 0; i < indices.size(); i += 3) {
+        const auto& a = vertices[indices[i]];
+        const auto& b = vertices[indices[i+1]];
+        const auto& c = vertices[indices[i+2]];
+        const auto expected = glm::normalize(glm::cross(b.position-a.position, c.position-a.position));
+        for (int j = 0; j < 3; ++j)
+            require(glm::length(vertices[indices[i+j]].normal-expected) < 0.0001f,
+                    "Procedural face normals must be unit length and point outward");
+        application::Cube cube;
+        cube.animation.enabled = false;
+        cube.transform.scale = {0.2f, 2.7f, 1.3f};
+        cube.transform.rotation_degrees = {22, 31, 74};
+        const auto model = cube.model();
+        const auto normal = glm::mat3(glm::transpose(glm::inverse(model))) * a.normal;
+        const auto tangent = glm::mat3(model) * (b.position-a.position);
+        require(std::abs(glm::dot(normal, tangent)) < 0.0001f,
+                "Inverse-transpose normals must remain perpendicular with nonuniform scaling");
+    }
+    application::Camera camera;
+    for (glm::vec2 angles : {glm::vec2(0, 0), glm::vec2(30, 110), glm::vec2(-89, -70)}) {
+        camera.rotation_degrees = angles;
+        camera.position = {2, -3, 7};
+        const auto eye = camera.view() * glm::vec4(camera.position, 1);
+        const auto ahead = camera.view() * glm::vec4(camera.position + camera.forward()*2.0f, 1);
+        require(glm::length(glm::vec3(eye)) < 0.0001f && close(ahead.z, -2),
+                "Free camera must put its position at the origin and look along camera -Z");
+        const auto before = camera.position;
+        camera.move({0, 0, 3});
+        require(glm::length(camera.position-before-camera.forward()*3.0f) < 0.0001f,
+                "Forward movement must follow camera orientation");
+    }
+    camera.rotate({1000, 10000});
+    require(camera.rotation_degrees.x <= 89 && camera.rotation_degrees.x >= -89,
+            "Pitch must avoid the lookAt pole singularity");
+    const auto view = camera.view();
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            require(std::isfinite(view[c][r]), "Camera rotation must remain finite");
+}
+
+void spotlightGeometry() {
+    for (glm::vec3 direction : {glm::vec3(0, -1, 0), glm::vec3(0, 1, 0),
+                               glm::vec3(1, -2, -3), glm::vec3(0)}) {
+        application::SpotLight light;
+        light.position = {2, 3, 4};
+        light.direction = direction;
+        const auto axis = application::safeDirection(direction);
+        const auto vertices = application::spotlightGuide(light);
+        require(vertices.size() == 146, "Guide must contain an axis and two complete cone rings with spokes");
+        require(glm::length(vertices[0].position-light.position) < 0.0001f &&
+                glm::length(vertices[1].position-light.position-axis*light.guide_length) < 0.0001f,
+                "Guide axis must match spotlight position, direction and length");
+        for (std::size_t i = 2; i < vertices.size(); ++i) {
+            const auto delta = vertices[i].position-light.position;
+            if (glm::length(delta) < 0.0001f) continue; // spoke apex
+            require(close(glm::dot(delta, axis), light.guide_length),
+                    "Cone rings must lie on a plane perpendicular to the spotlight axis");
+            const auto cosine = glm::dot(glm::normalize(delta), axis);
+            require(close(cosine, std::cos(glm::radians(light.inner_degrees))) ||
+                    close(cosine, std::cos(glm::radians(light.outer_degrees))),
+                    "Cone boundaries must match the inner and outer half angles used for lighting");
+        }
+    }
+}
 } // namespace
 int main() {
     try {
         projections();
+        normalsAndCamera();
+        spotlightGeometry();
         animation();
         individualPlayback();
         geometryAndTransform();

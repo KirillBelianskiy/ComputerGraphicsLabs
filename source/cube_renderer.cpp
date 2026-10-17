@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <glm/gtc/matrix_transform.hpp>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace application {
 
@@ -17,78 +21,169 @@ void CubeRenderer::initialize() {
     createPipeline();
 }
 
+void CubeRenderer::bindBuffer(VkDescriptorSet set, std::uint32_t binding,
+                              VkDescriptorType type, const graphics::Buffer& buffer,
+                              VkDeviceSize range) {
+    const VkDescriptorBufferInfo info = {buffer.handle(), 0, range};
+    const VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = set, .dstBinding = binding, .descriptorCount = 1,
+        .descriptorType = type, .pBufferInfo = &info,
+    };
+    vkUpdateDescriptorSets(graphics::internal::context.device, 1, &write, 0, nullptr);
+}
+
+bool CubeRenderer::ensureCapacity(graphics::Buffer& buffer, VkDeviceSize& capacity,
+                                  VkDeviceSize required, VkBufferUsageFlags usage) {
+    if (required <= capacity) return false;
+    graphics::Buffer replacement;
+    const auto new_capacity = std::max(required, capacity * 2);
+    replacement.create(new_capacity, usage);
+    buffer = std::move(replacement);
+    capacity = new_capacity;
+    return true;
+}
+
 void CubeRenderer::createDescriptors() {
     const auto device = graphics::internal::context.device;
-    const VkDescriptorSetLayoutBinding binding = {
-        .binding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(graphics::internal::context.physical_device, &properties);
+    const auto alignment = std::max<VkDeviceSize>(1, properties.limits.minUniformBufferOffsetAlignment);
+    model_stride_ = (sizeof(ModelUniformData) + alignment - 1) / alignment * alignment;
+    const VkDescriptorSetLayoutBinding bindings[] = {
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     };
-    const VkDescriptorSetLayoutCreateInfo layout = {
+    VkDescriptorSetLayoutCreateInfo layout = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &binding,
+        .bindingCount = 3, .pBindings = bindings,
     };
-    graphics::check(vkCreateDescriptorSetLayout(device, &layout, nullptr, &descriptor_layout_),
-                    "vkCreateDescriptorSetLayout");
-    const VkDescriptorPoolSize size = {
-        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = static_cast<std::uint32_t>(cube_count),
+    graphics::check(vkCreateDescriptorSetLayout(device, &layout, nullptr, &scene_layout_),
+                    "Scene descriptor layout");
+    const VkDescriptorSetLayoutBinding model_binding = {
+        0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr,
+    };
+    layout.bindingCount = 1;
+    layout.pBindings = &model_binding;
+    graphics::check(vkCreateDescriptorSetLayout(device, &layout, nullptr, &model_layout_),
+                    "Model descriptor layout");
+    const VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
     };
     const VkDescriptorPoolCreateInfo pool = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = static_cast<std::uint32_t>(cube_count),
-        .poolSizeCount = 1,
-        .pPoolSizes = &size,
+        .maxSets = 2, .poolSizeCount = 3, .pPoolSizes = sizes,
     };
     graphics::check(vkCreateDescriptorPool(device, &pool, nullptr, &descriptor_pool_),
                     "vkCreateDescriptorPool");
-    std::array<VkDescriptorSetLayout, cube_count> layouts{};
-    layouts.fill(descriptor_layout_);
-    std::array<VkDescriptorSet, cube_count> sets{};
+    const VkDescriptorSetLayout layouts[] = {scene_layout_, model_layout_};
+    VkDescriptorSet sets[2]{};
     const VkDescriptorSetAllocateInfo allocate = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = descriptor_pool_,
-        .descriptorSetCount = static_cast<std::uint32_t>(cube_count),
-        .pSetLayouts = layouts.data(),
+        .descriptorPool = descriptor_pool_, .descriptorSetCount = 2, .pSetLayouts = layouts,
     };
-    graphics::check(vkAllocateDescriptorSets(device, &allocate, sets.data()),
-                    "vkAllocateDescriptorSets");
-    for (std::size_t i = 0; i < objects_.size(); ++i) {
-        auto& object = objects_[i];
-        object.uniform_buffer.create(sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        object.descriptor_set = sets[i];
-        const VkDescriptorBufferInfo buffer = {
-            .buffer = object.uniform_buffer.handle(),
-            .offset = 0,
-            .range = sizeof(UniformData),
-        };
-        const VkWriteDescriptorSet write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = object.descriptor_set,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pBufferInfo = &buffer,
-        };
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    graphics::check(vkAllocateDescriptorSets(device, &allocate, sets), "vkAllocateDescriptorSets");
+    scene_set_ = sets[0]; model_set_ = sets[1];
+    scene_buffer_.create(sizeof(SceneUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    bindBuffer(scene_set_, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, scene_buffer_, sizeof(SceneUniformData));
+}
+
+void CubeRenderer::updateBuffers(const Scene& scene, float aspect) {
+    const SceneUniformData scene_data = {
+        scene.camera.projectionMatrix(aspect) * scene.camera.view(),
+        glm::vec4(scene.camera.position, 1),
+        glm::vec4(scene.ambient_color, scene.ambient_intensity),
+        glm::vec4(safeDirection(scene.directional.direction), scene.directional.intensity),
+        glm::vec4(scene.directional.color, 1),
+        glm::uvec4(scene.point_lights.size(), scene.spot_lights.size(), 0, 0),
+    };
+    scene_buffer_.write(&scene_data, sizeof(scene_data));
+    std::vector<PointLightData> points;
+    for (const auto& light : scene.point_lights)
+        points.push_back({glm::vec4(light.position, 1), glm::vec4(light.color, light.intensity)});
+    std::vector<SpotLightData> spots;
+    for (const auto& light : scene.spot_lights) {
+        const float outer = std::clamp(light.outer_degrees, 0.0f, 89.0f);
+        const float inner = std::clamp(light.inner_degrees, 0.0f, outer);
+        spots.push_back({glm::vec4(light.position, 1),
+            glm::vec4(safeDirection(light.direction), std::cos(glm::radians(inner))),
+            glm::vec4(light.color, light.intensity), glm::vec4(std::cos(glm::radians(outer)), 0, 0, 0)});
     }
+    // Vulkan descriptors need a nonzero range even for an empty logical array.
+    if (points.empty()) points.push_back({});
+    if (spots.empty()) spots.push_back({});
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(graphics::internal::context.physical_device, &properties);
+    const auto point_bytes = points.size() * sizeof(PointLightData);
+    const auto spot_bytes = spots.size() * sizeof(SpotLightData);
+    if (point_bytes > properties.limits.maxStorageBufferRange ||
+        spot_bytes > properties.limits.maxStorageBufferRange)
+        throw std::runtime_error("Light arrays exceed the device storage buffer range");
+    ensureCapacity(point_buffer_, point_capacity_, point_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    ensureCapacity(spot_buffer_, spot_capacity_, spot_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    point_buffer_.write(points.data(), point_bytes);
+    spot_buffer_.write(spots.data(), spot_bytes);
+    bindBuffer(scene_set_, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, point_buffer_, point_bytes);
+    bindBuffer(scene_set_, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, spot_buffer_, spot_bytes);
+
+    std::vector<ModelUniformData> models;
+    const auto addObject = [&](const Cube& cube) {
+        const auto model = cube.model();
+        models.push_back({model, glm::transpose(glm::inverse(model)),
+            glm::vec4(cube.albedo, cube.vertex_colors ? 1.0f : 0.0f),
+            glm::vec4(cube.specular, cube.shininess), glm::vec4(0)});
+    };
+    for (const auto& cube : scene.cubes) addObject(cube);
+    if (scene.show_room)
+        for (const auto& surface : scene.room) addObject(surface);
+    const auto marker = [&](glm::vec3 position, glm::vec3 color) {
+        const auto model = glm::scale(glm::translate(glm::mat4(1), position), glm::vec3(0.12f));
+        models.push_back({model, glm::mat4(1), glm::vec4(1), glm::vec4(0), glm::vec4(color, 1)});
+    };
+    if (scene.show_light_markers) {
+        for (const auto& light : scene.point_lights) marker(light.position, light.color);
+        for (const auto& light : scene.spot_lights) marker(light.position, light.color);
+    }
+    model_count_ = static_cast<std::uint32_t>(models.size());
+    std::vector<Vertex> guides;
+    if (scene.show_spot_guides) {
+        for (const auto& light : scene.spot_lights) {
+            const auto vertices = spotlightGuide(light);
+            guides.insert(guides.end(), vertices.begin(), vertices.end());
+        }
+    }
+    guide_vertex_count_ = static_cast<std::uint32_t>(guides.size());
+    if (!guides.empty()) {
+        ensureCapacity(guide_buffer_, guide_capacity_, guides.size() * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        guide_buffer_.write(guides.data(), guides.size() * sizeof(Vertex));
+        models.push_back({glm::mat4(1), glm::mat4(1), glm::vec4(1), glm::vec4(0), glm::vec4(1)});
+    }
+    if (models.size() * model_stride_ > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("Model dynamic offsets exceed uint32 range");
+    if (ensureCapacity(model_buffer_, model_capacity_, models.size() * model_stride_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))
+        bindBuffer(model_set_, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, model_buffer_, sizeof(ModelUniformData));
+    for (std::size_t i = 0; i < models.size(); ++i)
+        model_buffer_.write(&models[i], sizeof(ModelUniformData), i * model_stride_);
 }
 
 void CubeRenderer::createPipeline() {
     const auto& context = graphics::internal::context;
+    const VkDescriptorSetLayout layouts[] = {scene_layout_, model_layout_};
     const VkPipelineLayoutCreateInfo layout = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &descriptor_layout_,
+        .setLayoutCount = 2,
+        .pSetLayouts = layouts,
     };
     graphics::check(vkCreatePipelineLayout(context.device, &layout, nullptr,
                                            &pipeline_layout_), "vkCreatePipelineLayout");
     const graphics::ShaderModule vertex_shader(
-        std::filesystem::path(LAB1_SHADER_DIRECTORY) / "lab1.vert.spv");
+        std::filesystem::path(SCENE_SHADER_DIRECTORY) / "scene.vert.spv");
     const graphics::ShaderModule fragment_shader(
-        std::filesystem::path(LAB1_SHADER_DIRECTORY) / "lab1.frag.spv");
+        std::filesystem::path(SCENE_SHADER_DIRECTORY) / "scene.frag.spv");
     const VkPipelineShaderStageCreateInfo stages[] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex_shader.handle(), .pName = "main"},
@@ -101,13 +196,14 @@ void CubeRenderer::createPipeline() {
     const VkVertexInputAttributeDescription attributes[] = {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
+        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
     };
     const VkPipelineVertexInputStateCreateInfo vertex_input = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vertex_binding,
-        .vertexAttributeDescriptionCount = 2, .pVertexAttributeDescriptions = attributes,
+        .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attributes,
     };
-    const VkPipelineInputAssemblyStateCreateInfo assembly = {
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
@@ -115,7 +211,7 @@ void CubeRenderer::createPipeline() {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1, .scissorCount = 1,
     };
-    const VkPipelineRasterizationStateCreateInfo rasterization = {
+    VkPipelineRasterizationStateCreateInfo rasterization = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_BACK_BIT,
@@ -127,7 +223,7 @@ void CubeRenderer::createPipeline() {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
-    const VkPipelineDepthStencilStateCreateInfo depth = {
+    VkPipelineDepthStencilStateCreateInfo depth = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
         .depthCompareOp = VK_COMPARE_OP_LESS,
@@ -157,7 +253,12 @@ void CubeRenderer::createPipeline() {
     graphics::check(vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1,
                                               &pipeline, nullptr, &pipeline_),
                     "vkCreateGraphicsPipelines");
-    // Modules are released by their destructors. The pipeline keeps compiled code.
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    depth.depthWriteEnable = VK_FALSE;
+    graphics::check(vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1,
+                                              &pipeline, nullptr, &line_pipeline_),
+                    "Create spotlight line pipeline");
 }
 
 void CubeRenderer::render(const graphics::internal::FrameData& frame, const Scene& scene) {
@@ -170,15 +271,9 @@ void CubeRenderer::render(const graphics::internal::FrameData& frame, const Scen
         scene.viewport_left * pixel_scale, 0.0f, static_cast<float>(extent.width - 1)));
     const auto scene_width = extent.width - left;
     const float aspect = static_cast<float>(scene_width) / static_cast<float>(extent.height);
-    const auto view = scene.camera.view();
-    const auto projection = scene.camera.projectionMatrix(aspect);
-    // prepare() waited for the starter's single frame fence. Only now may the
-    // CPU overwrite the UBOs and reuse this command buffer safely.
-    for (std::size_t i = 0; i < objects_.size(); ++i) {
-        const auto& cube = scene.cubes[i];
-        const UniformData uniform = {cube.model(), view, projection, glm::vec4(cube.color, 1.0f)};
-        objects_[i].uniform_buffer.write(&uniform, sizeof(uniform));
-    }
+    // prepare() has waited for the single frame fence: writes, descriptor updates
+    // and replacing buffers cannot race with the previous GPU submission.
+    updateBuffers(scene, aspect);
     const auto command = frame.command_buffer;
     graphics::check(vkResetCommandBuffer(command, 0), "vkResetCommandBuffer");
     const VkCommandBufferBeginInfo begin = {
@@ -209,11 +304,23 @@ void CubeRenderer::render(const graphics::internal::FrameData& frame, const Scen
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
     vkCmdBindIndexBuffer(command, index_buffer_.handle(), 0, VK_INDEX_TYPE_UINT16);
-    for (const auto& object : objects_) {
-        // Every draw binds a different descriptor set with its own UBO.
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline_layout_, 0, 1, &scene_set_, 0, nullptr);
+    const auto bindModel = [&](std::uint32_t index) {
+        const auto dynamic_offset = static_cast<std::uint32_t>(index * model_stride_);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 pipeline_layout_, 0, 1, &object.descriptor_set, 0, nullptr);
+            pipeline_layout_, 1, 1, &model_set_, 1, &dynamic_offset);
+    };
+    for (std::uint32_t i = 0; i < model_count_; ++i) {
+        bindModel(i);
         vkCmdDrawIndexed(command, static_cast<std::uint32_t>(cube_indices.size()), 1, 0, 0, 0);
+    }
+    if (guide_vertex_count_ > 0) {
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipeline_);
+        const VkBuffer guides = guide_buffer_.handle();
+        vkCmdBindVertexBuffers(command, 0, 1, &guides, &offset);
+        bindModel(model_count_);
+        vkCmdDraw(command, guide_vertex_count_, 1, 0, 0);
     }
     vkCmdEndRenderPass(command);
     graphics::check(vkEndCommandBuffer(command), "vkEndCommandBuffer");
@@ -221,21 +328,21 @@ void CubeRenderer::render(const graphics::internal::FrameData& frame, const Scen
 
 void CubeRenderer::shutdown() noexcept {
     const auto device = graphics::internal::context.device;
-    // application::shutdown waits for the GPU before entering here.
+    vkDestroyPipeline(device, line_pipeline_, nullptr);
     vkDestroyPipeline(device, pipeline_, nullptr);
     vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
-    vkDestroyDescriptorPool(device, descriptor_pool_, nullptr); // also frees all sets
-    vkDestroyDescriptorSetLayout(device, descriptor_layout_, nullptr);
-    pipeline_ = VK_NULL_HANDLE;
+    vkDestroyDescriptorPool(device, descriptor_pool_, nullptr);
+    vkDestroyDescriptorSetLayout(device, scene_layout_, nullptr);
+    vkDestroyDescriptorSetLayout(device, model_layout_, nullptr);
+    line_pipeline_ = pipeline_ = VK_NULL_HANDLE;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
-    descriptor_layout_ = VK_NULL_HANDLE;
-    for (auto& object : objects_) {
-        object.descriptor_set = VK_NULL_HANDLE;
-        object.uniform_buffer.destroy();
-    }
-    index_buffer_.destroy();
-    vertex_buffer_.destroy();
+    scene_layout_ = model_layout_ = VK_NULL_HANDLE;
+    scene_set_ = model_set_ = VK_NULL_HANDLE;
+    model_buffer_.destroy(); scene_buffer_.destroy();
+    point_buffer_.destroy(); spot_buffer_.destroy(); guide_buffer_.destroy();
+    index_buffer_.destroy(); vertex_buffer_.destroy();
+    model_capacity_ = point_capacity_ = spot_capacity_ = guide_capacity_ = 0;
 }
 
 } // namespace application
