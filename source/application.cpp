@@ -16,10 +16,46 @@ Scene scene;
 CubeRenderer renderer;
 
 void materialControls(Cube& object) {
+    if (ImGui::BeginCombo("Texture material", materials.at(object.material_id).name)) {
+        for (std::uint32_t i = 0; i < materials.size(); ++i) {
+            const bool selected = object.material_id == i;
+            if (ImGui::Selectable(materials[i].name, selected)) object.material_id = i;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
     ImGui::ColorEdit3("Albedo", glm::value_ptr(object.albedo));
     ImGui::ColorEdit3("Specular color", glm::value_ptr(object.specular));
     ImGui::SliderFloat("Shininess", &object.shininess, 1.0f, 256.0f, "%.1f");
     ImGui::Checkbox("Procedural vertex colors", &object.vertex_colors);
+    if (object.material_id != 0) {
+        ImGui::Checkbox("Specular map", &object.specular_map_enabled);
+        ImGui::Checkbox("Emissive map", &object.emissive_map_enabled);
+        ImGui::SliderFloat("Emissive strength", &object.emissive_strength, 0.0f, 5.0f);
+    }
+}
+
+void textureEffectControls(Cube& object) {
+    auto& effect = object.texture_effect;
+    ImGui::TextWrapped("Settings apply to the selected object. Animation is independent of object motion.");
+    ImGui::BeginDisabled(object.material_id == 0);
+    ImGui::Checkbox("Enable effect", &effect.enabled);
+    constexpr const char* modes[] = {"Animated kaleidoscope", "RGB split", "Wave / echo", "Box blur 3x3", "Threshold"};
+    int mode = static_cast<int>(effect.mode);
+    if (ImGui::Combo("Sampling mode", &mode, modes, 5)) effect.mode = static_cast<EffectMode>(mode);
+    ImGui::SliderFloat("Intensity", &effect.strength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Animation speed", &effect.speed, 0.0f, 5.0f);
+    ImGui::Checkbox("Play effect", &effect.playing);
+    ImGui::SliderFloat("Color modulation", &effect.color_modulation, 0.0f, 1.0f);
+    if (effect.mode == EffectMode::kaleidoscope) {
+        int sectors = static_cast<int>(effect.sectors);
+        if (ImGui::SliderInt("Sectors", &sectors, 2, 24)) effect.sectors = static_cast<std::uint32_t>(sectors);
+        ImGui::SliderFloat("UV scale", &effect.scale, 0.25f, 3.0f);
+    }
+    if (effect.mode == EffectMode::box_blur) ImGui::TextWrapped("Intensity controls the texel radius and blend. The kernel has nine samples.");
+    if (ImGui::Button("Reset effect")) effect = TextureEffect{};
+    ImGui::EndDisabled();
+    if (object.material_id == 0) ImGui::TextWrapped("Select a textured material to enable sampling effects.");
 }
 
 void cameraControls() {
@@ -134,7 +170,7 @@ void controls() {
         ImVec2(panel_width, std::max(100.0f, display.y - 32.0f)));
     const auto flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize;
-    if (!ImGui::Begin("Lab 2 | Camera and lighting", nullptr, flags)) {
+    if (!ImGui::Begin("Lab 3 | Texture mapping", nullptr, flags)) {
         ImGui::End();
         return;
     }
@@ -208,6 +244,23 @@ void controls() {
             }
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Materials")) {
+            ImGui::Combo("Selected cube", &scene.selected_cube, "Cube 1\0Cube 2\0");
+            auto& object = scene.cubes[static_cast<std::size_t>(scene.selected_cube)];
+            materialControls(object);
+            const auto& material = materials[object.material_id];
+            ImGui::SeparatorText("Texture files");
+            ImGui::TextWrapped("Albedo: %s", material.albedo_path[0] ? material.albedo_path : "white fallback / legacy colors");
+            ImGui::TextWrapped("Specular: %s", material.specular_path[0] ? material.specular_path : "black 1x1 fallback");
+            ImGui::TextWrapped("Emissive: %s", material.emissive_path[0] ? material.emissive_path : "black 1x1 fallback");
+            ImGui::TextWrapped("Tint and shading controls belong to the selected object; texture sets are shared.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Effects")) {
+            ImGui::Combo("Selected cube", &scene.selected_cube, "Cube 1\0Cube 2\0");
+            textureEffectControls(scene.cubes[static_cast<std::size_t>(scene.selected_cube)]);
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("Lights")) {
             lightControls();
             ImGui::EndTabItem();
@@ -242,7 +295,7 @@ bool initialize() {
         renderer.initialize();
         return true;
     } catch (const std::exception& error) {
-        std::cerr << "Lab 2 initialization: " << error.what() << '\n';
+        std::cerr << "Lab 3 initialization: " << error.what() << '\n';
         shutdown(); // release resources from a partially completed initialization
         return false;
     }

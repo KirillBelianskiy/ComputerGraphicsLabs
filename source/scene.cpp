@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace application {
 
@@ -16,6 +18,8 @@ std::array<Vertex, 24> cubeVertices() {
         {{0, 3, 2, 1}}, {{4, 5, 6, 7}}, {{0, 4, 7, 3}},
         {{1, 2, 6, 5}}, {{0, 1, 5, 4}}, {{3, 7, 6, 2}},
     }};
+    constexpr std::array<glm::vec3, 6> right = {{{-1,0,0}, {1,0,0}, {0,0,1}, {0,0,-1}, {1,0,0}, {1,0,0}}};
+    constexpr std::array<glm::vec3, 6> up = {{{0,1,0}, {0,1,0}, {0,1,0}, {0,1,0}, {0,0,1}, {0,0,-1}}};
     std::array<Vertex, 24> vertices{};
     for (std::size_t face = 0; face < faces.size(); ++face) {
         const auto& f = faces[face];
@@ -23,7 +27,9 @@ std::array<Vertex, 24> cubeVertices() {
                                                       positions[f[2]] - positions[f[0]]));
         for (std::size_t corner = 0; corner < 4; ++corner) {
             const auto position = positions[f[corner]];
-            vertices[face*4+corner] = {position, (position + glm::vec3(1)) * 0.5f, normal};
+            vertices[face*4+corner] = {position, (position + glm::vec3(1)) * 0.5f, normal,
+                {(glm::dot(position, right[face]) + 1.0f) * 0.5f,
+                 (1.0f - glm::dot(position, up[face])) * 0.5f}};
         }
     }
     return vertices;
@@ -59,6 +65,24 @@ std::vector<Vertex> spotlightGuide(const SpotLight& light) {
         }
     }
     return result;
+}
+
+std::uint64_t alignedUniformStride(std::uint64_t size, std::uint64_t alignment) {
+    if (!size || !alignment) throw std::invalid_argument("Uniform size and alignment must be nonzero");
+    if (size > std::numeric_limits<std::uint64_t>::max() - (alignment - 1))
+        throw std::overflow_error("Uniform alignment overflow");
+    return (size + alignment - 1) / alignment * alignment;
+}
+
+void TextureEffect::advance(double delta_seconds) {
+    if (enabled && playing && std::isfinite(delta_seconds) && delta_seconds > 0 && std::isfinite(speed))
+        time += delta_seconds * std::clamp(speed, 0.0f, 5.0f);
+}
+EffectPushConstants effectPushConstants(const TextureEffect& effect, bool textured) {
+    return {{static_cast<std::uint32_t>(effect.mode), effect.enabled && textured ? 1u : 0u,
+             std::clamp(effect.sectors, 2u, 24u), 0u},
+            {static_cast<float>(effect.time), std::clamp(effect.strength, 0.0f, 1.0f),
+             std::clamp(effect.scale, 0.25f, 3.0f), std::clamp(effect.color_modulation, 0.0f, 1.0f)}};
 }
 
 void Animation::advance(double delta_seconds) {
@@ -178,6 +202,8 @@ Scene::Scene() {
         room[i].albedo = colors[i];
         room[i].specular = glm::vec3(0.12f);
         room[i].shininess = 32.0f;
+        room[i].material_id = 2;
+        room[i].albedo = glm::vec3(1.0f);
     }
 
     for (std::size_t i = 0; i < cubes.size(); ++i) {
@@ -185,6 +211,12 @@ Scene::Scene() {
     }
     cubes[0].animation.orbit_phase_degrees = 180.0f;
     cubes[1].albedo = glm::vec3(0.65f, 1.0f, 0.85f);
+    point_lights[0].intensity = 6.0f;
+    spot_lights[0].intensity = 20.0f;
+    cubes[0].material_id = 1;
+    cubes[1].material_id = 3;
+    cubes[1].albedo = glm::vec3(1.0f);
+    cubes[1].texture_effect.enabled = true;
     cubes[1].animation.rotation_speed_degrees = glm::vec3(-20.0f, 35.0f, -10.0f);
 }
 
@@ -222,7 +254,9 @@ void Scene::update(double absolute_time) {
     clock_started = true;
     for (auto& cube : cubes) {
         cube.animation.advance(delta);
+        cube.texture_effect.advance(delta);
     }
+    for (auto& surface : room) surface.texture_effect.advance(delta);
 }
 
 } // namespace application

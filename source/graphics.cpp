@@ -28,11 +28,12 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         allocator_ = std::exchange(other.allocator_, nullptr);
         mapped_ = std::exchange(other.mapped_, nullptr);
         size_ = std::exchange(other.size_, 0);
+        memory_properties_ = std::exchange(other.memory_properties_, 0);
     }
     return *this;
 }
 
-void Buffer::create(VkDeviceSize size, VkBufferUsageFlags usage) {
+void Buffer::create(VkDeviceSize size, VkBufferUsageFlags usage, MemoryUsage memory) {
     if (buffer_ != VK_NULL_HANDLE || size == 0) {
         throw std::logic_error("Buffer::create requires an empty buffer and nonzero size");
     }
@@ -44,16 +45,19 @@ void Buffer::create(VkDeviceSize size, VkBufferUsageFlags usage) {
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     
+    const bool host = memory == MemoryUsage::host;
     const VmaAllocationCreateInfo allocation = {
-        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO,
+        .flags = host ? VmaAllocationCreateFlags(VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                                VMA_ALLOCATION_CREATE_MAPPED_BIT) : 0u,
+        .usage = host ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        .requiredFlags = host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
     };
     VmaAllocationInfo allocated{};
     check(vmaCreateBuffer(allocator_, &info, &allocation, &buffer_, &allocation_,
                           &allocated), "vmaCreateBuffer");
     mapped_ = allocated.pMappedData;
     size_ = size;
+    vmaGetAllocationMemoryProperties(allocator_, allocation_, &memory_properties_);
 }
 
 void Buffer::write(const void* data, VkDeviceSize size, VkDeviceSize offset) {
@@ -76,6 +80,7 @@ void Buffer::destroy() noexcept {
     allocator_ = nullptr;
     mapped_ = nullptr;
     size_ = 0;
+    memory_properties_ = 0;
 }
 
 ShaderModule::ShaderModule(const std::filesystem::path& path)

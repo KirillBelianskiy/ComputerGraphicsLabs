@@ -7,6 +7,8 @@ add_executable(${PROJECT_NAME}
     source/main.cpp
     source/graphics_internal.cpp
     source/graphics.cpp
+    source/image.cpp
+    source/texture.cpp
     source/scene.cpp
     source/cube_renderer.cpp
     source/application.cpp
@@ -88,7 +90,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${vulkanmemoryallocator_SOURCE_DIR}/include)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${vulkanmemoryallocator_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
 target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
 	${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
@@ -132,7 +134,14 @@ endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     SCENE_SHADER_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/shaders"
+    SCENE_ASSET_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/assets"
 )
+
+add_custom_target(scene-assets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets
+    COMMENT "Copying scene textures" VERBATIM
+)
+add_dependencies(${PROJECT_NAME} scene-assets)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -156,5 +165,15 @@ if(BUILD_TESTING)
     target_compile_definitions(runtime-smoke PRIVATE ${SCENE_APP_DEFINITIONS})
     target_link_libraries(runtime-smoke PRIVATE ${SCENE_APP_LIBRARIES})
     target_compile_features(runtime-smoke PRIVATE cxx_std_20)
-    add_dependencies(runtime-smoke shaders)
+    add_dependencies(runtime-smoke shaders scene-assets)
+
+    add_executable(texture-tests tests/texture_tests.cpp source/image.cpp source/scene.cpp)
+    target_include_directories(texture-tests PRIVATE source)
+    target_include_directories(texture-tests SYSTEM PRIVATE third_party/stb)
+    target_link_libraries(texture-tests PRIVATE glm::glm)
+    target_compile_features(texture-tests PRIVATE cxx_std_20)
+    target_compile_definitions(texture-tests PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_RADIANS
+        SCENE_ASSET_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/assets")
+    add_dependencies(texture-tests scene-assets)
+    add_test(NAME textures COMMAND texture-tests)
 endif()

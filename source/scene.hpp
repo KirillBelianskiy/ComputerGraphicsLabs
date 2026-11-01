@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
+#include <type_traits>
 #include <vector>
 
 namespace application {
@@ -14,6 +16,7 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 color;
     glm::vec3 normal;
+    glm::vec2 uv{0.0f};
 };
 
 // Separate vertices per face preserve the cube's hard edges.
@@ -62,6 +65,40 @@ struct Animation {
     [[nodiscard]] glm::vec3 offset() const;
 };
 
+struct Material {
+    const char* name;
+    const char* albedo_path;
+    const char* specular_path;
+    const char* emissive_path;
+};
+inline constexpr std::array<Material, 5> materials = {{
+    {"Lab 1/2 colors", "", "", ""},
+    {"Ornamental panel", "textures/albedo/panel_albedo.png", "textures/specular/panel_specular.png", "textures/emissive/panel_emissive.png"},
+    {"Terracotta tiles", "textures/albedo/surface_albedo.png", "", ""},
+    {"Kaleidoscope source", "textures/albedo/kaleidoscope_source.png", "", ""},
+    {"UV orientation", "textures/generated/uv_grid.png", "", ""},
+}};
+
+enum class EffectMode : std::uint32_t { kaleidoscope, rgb_split, wave_echo, box_blur, threshold };
+struct TextureEffect {
+    EffectMode mode = EffectMode::kaleidoscope;
+    bool enabled = false;
+    bool playing = true;
+    float speed = 1.0f;
+    float strength = 0.65f;
+    float scale = 1.0f;
+    float color_modulation = 0.25f;
+    std::uint32_t sectors = 8;
+    double time = 0.0;
+    void advance(double delta_seconds);
+};
+struct alignas(16) EffectPushConstants {
+    glm::uvec4 control; // mode, enabled, sectors, reserved
+    glm::vec4 parameters; // integrated time, strength, scale, color modulation
+};
+EffectPushConstants effectPushConstants(const TextureEffect& effect, bool textured);
+std::uint64_t alignedUniformStride(std::uint64_t size, std::uint64_t alignment);
+
 struct Cube {
     Transform transform;
     glm::vec3 albedo{1.0f};
@@ -69,6 +106,11 @@ struct Cube {
     glm::vec3 specular{1.0f};
     float shininess = 64.0f;
     bool vertex_colors = false;
+    std::uint32_t material_id = 0;
+    float emissive_strength = 1.0f;
+    bool specular_map_enabled = true;
+    bool emissive_map_enabled = true;
+    TextureEffect texture_effect;
     [[nodiscard]] glm::mat4 model() const;
 };
 
@@ -153,6 +195,7 @@ struct alignas(16) ModelUniformData {
     glm::vec4 albedo; // w selects procedural vertex colors
     glm::vec4 specular_shininess;
     glm::vec4 emission; // w = 1 for unlit visualization
+    glm::vec4 texture_parameters; // textured, emissive strength, specular enabled, emissive enabled
 };
 struct alignas(16) PointLightData {
     glm::vec4 position;
@@ -165,4 +208,13 @@ struct alignas(16) SpotLightData {
     glm::vec4 outer_cos;
 };
 
+static_assert(std::is_standard_layout_v<Vertex>);
+static_assert(sizeof(ModelUniformData) == 192);
+static_assert(offsetof(ModelUniformData, normal_matrix) == 64);
+static_assert(offsetof(ModelUniformData, albedo) == 128);
+static_assert(offsetof(ModelUniformData, specular_shininess) == 144);
+static_assert(offsetof(ModelUniformData, emission) == 160);
+static_assert(offsetof(ModelUniformData, texture_parameters) == 176);
+static_assert(sizeof(EffectPushConstants) == 32);
+static_assert(offsetof(EffectPushConstants, parameters) == 16);
 } // namespace application

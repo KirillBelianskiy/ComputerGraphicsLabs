@@ -16,7 +16,7 @@
 int main() {
     if (!glfwInit()) return EXIT_FAILURE;
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    auto* window = glfwCreateWindow(1280, 720, "Lab 2 | Runtime verification", nullptr, nullptr);
+    auto* window = glfwCreateWindow(1280, 720, "Lab 3 | Runtime verification", nullptr, nullptr);
     if (!window) { glfwTerminate(); return EXIT_FAILURE; }
     glfwSetFramebufferSizeCallback(window, [](GLFWwindow*, int width, int height) {
         if (width > 0 && height > 0) graphics::internal::resize(width, height);
@@ -38,7 +38,7 @@ int main() {
         if (!application_ready) throw std::runtime_error("Application initialization failed");
         auto& scene = application::currentScene();
         int rendered_frames = 0;
-        for (int frame = 0; frame < 240 && !glfwWindowShouldClose(window); ++frame) {
+        for (int frame = 0; frame < 420 && !glfwWindowShouldClose(window); ++frame) {
             glfwPollEvents();
             if (frame == 70) scene.show_room = false;
             if (frame == 75) {
@@ -118,6 +118,45 @@ int main() {
                 scene.ambient_intensity = 0.08f;
                 scene.camera = application::Camera{};
             }
+            if (frame == 240) {
+                for (auto& cube : scene.cubes) {
+                    cube.material_id = 4;
+                    cube.texture_effect.enabled = false;
+                    cube.animation.enabled = false;
+                }
+            }
+            if (frame == 250) {
+                scene.cubes[0].material_id = scene.cubes[1].material_id = 1;
+                scene.ambient_intensity = scene.directional.intensity = 0;
+                scene.point_lights.clear(); scene.spot_lights.clear();
+            }
+            if (frame == 260) scene.cubes[0].emissive_map_enabled = false;
+            if (frame == 270) {
+                scene.cubes[0].emissive_map_enabled = true;
+                scene.cubes[0].specular_map_enabled = false;
+                scene.ambient_intensity = 0.08f; scene.directional.intensity = 1.0f;
+            }
+            if (frame == 280) {
+                scene.cubes[0].specular_map_enabled = true;
+                scene.cubes[1].material_id = 2;
+            }
+            if (frame >= 290 && (frame - 290) % 20 == 0) {
+                const auto step = static_cast<std::uint32_t>((frame - 290) / 20);
+                scene.cubes[0].material_id = step % application::materials.size();
+                scene.cubes[1].material_id = 3;
+                auto& effect = scene.cubes[1].texture_effect;
+                effect.enabled = true;
+                effect.playing = true;
+                effect.mode = static_cast<application::EffectMode>(step % 5);
+                effect.strength = 0.9f;
+                effect.color_modulation = 0.6f;
+            }
+            if (frame == 305) scene.cubes[1].texture_effect.playing = false;
+            if (frame == 308) scene.cubes[1].texture_effect.playing = true;
+            if (frame == 415) {
+                scene.cubes[1].texture_effect = application::TextureEffect{};
+                scene.cubes[1].material_id = 0;
+            }
             ImGui_ImplVulkan_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             auto& io = ImGui::GetIO();
@@ -153,7 +192,7 @@ int main() {
             graphics::internal::submitAndPresent();
             ++rendered_frames;
         }
-        if (rendered_frames != 240) throw std::runtime_error("Runtime verification interrupted");
+        if (rendered_frames != 420) throw std::runtime_error("Runtime verification interrupted");
         status = EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
@@ -166,8 +205,8 @@ int main() {
         status = EXIT_FAILURE;
     }
     if (status == EXIT_SUCCESS) {
-        std::cout << "PASS: Vulkan 1.1, 240 frames, both projections, playback, paths, resize, "
-                     "circle radius, complex path size, individual pause/resume, per-cube edits, free camera, materials, SSBO growth/clear/re-add, markers and cones, room visibility/materials, keyboard input/capture, zero validation errors (including shutdown)\n";
+        std::cout << "PASS: Vulkan 1.1, 420 frames, both projections, playback, paths, resize, "
+                     "circle radius, complex path size, individual pause/resume, per-cube edits, free camera, materials, SSBO growth/clear/re-add, markers and cones, room visibility/materials, keyboard input/capture, all texture materials, shared material sets, all five sampling modes, effect pause/reset, specular/emissive toggles, zero validation errors (including shutdown)\n";
     }
     if (backend_ready) ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
